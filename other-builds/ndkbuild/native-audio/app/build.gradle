@@ -4,7 +4,8 @@ def REMOTE_SRC_ROOT = '../../../../' + rootProject.getName() + '/' +
         project.getName() + '/src/main'
 
 android {
-     compileSdkVersion 28
+     compileSdkVersion 29
+    ndkVersion '21.2.6472646'
 
      defaultConfig {
         applicationId 'com.example.nativeaudio'

@@ -44,8 +44,9 @@ If you've found an error in these samples, please [file an issue](https://github
 Patches are encouraged, and may be submitted by [forking this project](https://github.com/googlesamples/android-ndk/fork) and
 submitting a pull request through GitHub. Please see [CONTRIBUTING.md](../CONTRIBUTING.md) for more details.
 
-- [Stack Overflow](http://stackoverflow.com/questions/tagged/android-ndk)
-- [Google+ Community](https://plus.google.com/communities/105153134372062985968)
+For generic questions about Android Camera and other feedbacks, please go to
+
+- [Stack Overflow](http://stackoverflow.com/questions/tagged/android-camera)
 - [Android Tools Feedbacks](http://tools.android.com/feedback)
 
 License

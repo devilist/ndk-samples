@@ -34,6 +34,9 @@
 
 static NativeEngine *_singleton = NULL;
 
+// workaround for internal bug b/149866792
+static NativeEngineSavedState appState = {false};
+
 NativeEngine::NativeEngine(struct android_app *app) {
     LOGD("NativeEngine: initializing.");
     mApp = app;
@@ -99,12 +102,11 @@ void NativeEngine::GameLoop() {
     mApp->onInputEvent = _handle_input_proxy;
 
     while (1) {
-        int ident, events;
+        int events;
         struct android_poll_source* source;
 
         // If not animating, block until we get an event; if animating, don't block.
-        while ((ident = ALooper_pollAll(IsAnimating() ? 0 : -1, NULL, &events, 
-                (void**)&source)) >= 0) {
+        while ((ALooper_pollAll(IsAnimating() ? 0 : -1, NULL, &events, (void **) &source)) >= 0) {
 
             // process event
             if (source != NULL) {
@@ -137,7 +139,6 @@ JNIEnv* NativeEngine::GetJniEnv() {
     return mJniEnv;
 }
 
-
 void NativeEngine::HandleCommand(int32_t cmd) {
     SceneManager *mgr = SceneManager::GetInstance();
 
@@ -146,6 +147,7 @@ void NativeEngine::HandleCommand(int32_t cmd) {
         case APP_CMD_SAVE_STATE:
             // The system has asked us to save our current state.
             VLOGD("NativeEngine: APP_CMD_SAVE_STATE");
+            mState.mHasFocus = mHasFocus;
             mApp->savedState = malloc(sizeof(mState));
             *((NativeEngineSavedState*)mApp->savedState) = mState;
             mApp->savedStateSize = sizeof(mState);
@@ -155,7 +157,16 @@ void NativeEngine::HandleCommand(int32_t cmd) {
             VLOGD("NativeEngine: APP_CMD_INIT_WINDOW");
             if (mApp->window != NULL) {
                 mHasWindow = true;
+                if (mApp->savedStateSize == sizeof(mState) && mApp->savedState != nullptr) {
+                    mState = *((NativeEngineSavedState*)mApp->savedState);
+                    mHasFocus = mState.mHasFocus;
+                } else {
+                    // Workaround APP_CMD_GAINED_FOCUS issue where the focus state is not
+                    // passed down from NativeActivity when restarting Activity
+                    mHasFocus = appState.mHasFocus;
+                }
             }
+            VLOGD("HandleCommand(%d): hasWindow = %d, hasFocus = %d", cmd, mHasWindow?1:0, mHasFocus?1:0);
             break;
         case APP_CMD_TERM_WINDOW:
             // The window is going away -- kill the surface
@@ -166,10 +177,12 @@ void NativeEngine::HandleCommand(int32_t cmd) {
         case APP_CMD_GAINED_FOCUS:
             VLOGD("NativeEngine: APP_CMD_GAINED_FOCUS");
             mHasFocus = true;
+            mState.mHasFocus = appState.mHasFocus = mHasFocus;
             break;
         case APP_CMD_LOST_FOCUS:
             VLOGD("NativeEngine: APP_CMD_LOST_FOCUS");
             mHasFocus = false;
+            mState.mHasFocus = appState.mHasFocus = mHasFocus;
             break;
         case APP_CMD_PAUSE:
             VLOGD("NativeEngine: APP_CMD_PAUSE");
@@ -247,13 +260,13 @@ static bool _cooked_event_callback(struct CookedEvent *event) {
             return true;
         case COOKED_EVENT_TYPE_BACK:
             return mgr->OnBackKeyPressed();
+        default:
+            return false;
     }
-
-    return false;
 }
 
 bool NativeEngine::HandleInput(AInputEvent *event) {
-    return CookEvent(event, _cooked_event_callback) ? 1 : 0;
+    return CookEvent(event, _cooked_event_callback);
 }
 
 bool NativeEngine::InitDisplay() {
@@ -281,9 +294,9 @@ bool NativeEngine::InitSurface() {
         LOGD("NativeEngine: no need to init surface (already had one).");
         return true;
     }
-        
+
     LOGD("NativeEngine: initializing surface.");
-    
+
     EGLint numConfigs;
 
     const EGLint attribs[] = {
@@ -322,7 +335,7 @@ bool NativeEngine::InitContext() {
         LOGD("NativeEngine: no need to init context (already had one).");
         return true;
     }
-        
+
     LOGD("NativeEngine: initializing context.");
 
     // create EGL context
@@ -345,52 +358,46 @@ void NativeEngine::ConfigureOpenGL() {
 
 
 bool NativeEngine::PrepareToRender() {
-    do {
-        // if we're missing a surface, context, or display, create them
-        if (mEglDisplay == EGL_NO_DISPLAY || mEglSurface == EGL_NO_SURFACE || 
-                mEglContext == EGL_NO_CONTEXT) {
+    if (mEglDisplay == EGL_NO_DISPLAY || mEglSurface == EGL_NO_SURFACE ||
+        mEglContext == EGL_NO_CONTEXT) {
 
-            // create display if needed
-            if (!InitDisplay()) {
-                LOGE("NativeEngine: failed to create display.");
-                return false;
-            }
-
-            // create surface if needed
-            if (!InitSurface()) {
-                LOGE("NativeEngine: failed to create surface.");
-                return false;
-            }
-
-            // create context if needed
-            if (!InitContext()) {
-                LOGE("NativeEngine: failed to create context.");
-                return false;
-            }
-
-            LOGD("NativeEngine: binding surface and context (display %p, surface %p, context %p)", 
-                    mEglDisplay, mEglSurface, mEglContext);
-
-            // bind them
-            if (EGL_FALSE == eglMakeCurrent(mEglDisplay, mEglSurface, mEglSurface, mEglContext)) {
-                LOGE("NativeEngine: eglMakeCurrent failed, EGL error %d", eglGetError());
-                HandleEglError(eglGetError());
-            }
-
-            // configure our global OpenGL settings
-            ConfigureOpenGL();
+        // create display if needed
+        if (!InitDisplay()) {
+            LOGE("NativeEngine: failed to create display.");
+            return false;
         }
 
-        // now that we're sure we have a context and all, if we don't have the OpenGL 
-        // objects ready, create them.
-        if (!mHasGLObjects) {
-            LOGD("NativeEngine: creating OpenGL objects.");
-            if (!InitGLObjects()) {
-                LOGE("NativeEngine: unable to initialize OpenGL objects.");
-                return false;
-            }
+        // create surface if needed
+        if (!InitSurface()) {
+            LOGE("NativeEngine: failed to create surface.");
+            return false;
         }
-    } while(0);
+
+        // create context if needed
+        if (!InitContext()) {
+            LOGE("NativeEngine: failed to create context.");
+            return false;
+        }
+
+        LOGD("NativeEngine: binding surface and context (display %p, surface %p, context %p)",
+             mEglDisplay, mEglSurface, mEglContext);
+
+        // bind them
+        if (EGL_FALSE == eglMakeCurrent(mEglDisplay, mEglSurface, mEglSurface, mEglContext)) {
+            LOGE("NativeEngine: eglMakeCurrent failed, EGL error %d", eglGetError());
+            HandleEglError(eglGetError());
+        }
+
+        // configure our global OpenGL settings
+        ConfigureOpenGL();
+    }
+    if (!mHasGLObjects) {
+        LOGD("NativeEngine: creating OpenGL objects.");
+        if (!InitGLObjects()) {
+            LOGE("NativeEngine: unable to initialize OpenGL objects.");
+            return false;
+        }
+    }
 
     // ready to render
     return true;
@@ -515,7 +522,7 @@ void NativeEngine::DoFrame() {
 
     if (width != mSurfWidth || height != mSurfHeight) {
         // notify scene manager that the surface has changed size
-        LOGD("NativeEngine: surface changed size %dx%d --> %dx%d", mSurfWidth, mSurfHeight, 
+        LOGD("NativeEngine: surface changed size %dx%d --> %dx%d", mSurfWidth, mSurfHeight,
                 width, height);
         mSurfWidth = width;
         mSurfHeight = height;
@@ -528,7 +535,7 @@ void NativeEngine::DoFrame() {
         mIsFirstFrame = false;
         mgr->RequestNewScene(new WelcomeScene());
     }
-    
+
     // render!
     mgr->DoFrame();
 
